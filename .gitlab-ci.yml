@@ -1,0 +1,84 @@
+stages:
+  - fmt
+  - validate
+  - plan
+  - apply
+  - destroy-bootstrap
+
+default:
+  tags: [terraform]
+
+variables:
+  TF_STATE_NAME: "bootstrap"
+  TF_HTTP_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}"
+  TF_HTTP_LOCK_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}/lock"
+  TF_HTTP_UNLOCK_ADDRESS: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/terraform/state/${TF_STATE_NAME}/lock"
+  TF_HTTP_LOCK_METHOD: "POST"
+  TF_HTTP_UNLOCK_METHOD: "DELETE"
+  TF_HTTP_RETRY_WAIT_MIN: "5"
+
+# IMPORTANT: 
+# Define these TWO CI/CD variables in GitLab (masked, protected):
+#   TF_HTTP_USERNAME = <gitlab username OR project access token username>
+#   TF_HTTP_PASSWORD = <project/personal access token with api scope>
+#
+# Do NOT use CI_JOB_TOKEN for plan/apply in separate jobs. [web:105][web:157]
+
+.terraform_init: &terraform_init
+  - terraform init -input=false
+
+fmt:
+  stage: fmt
+  script:
+    - terraform fmt -check -recursive
+
+validate:
+  stage: validate
+  script:
+    - *terraform_init
+    - terraform validate
+
+plan:
+  stage: plan
+  script:
+    - *terraform_init
+    - terraform plan -input=false -out=tfplan
+  artifacts:
+    paths:
+      - tfplan
+
+apply:
+  stage: apply
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+    - when: never
+  script:
+    - *terraform_init
+    - terraform plan -input=false -out=tfplan
+    - terraform apply -input=false -auto-approve tfplan
+
+destroy-bootstrap:
+  stage: destroy-bootstrap
+  when: manual
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+    - when: never
+  script: |
+    echo "!!!! BOOTSTRAP DESTROY REQUESTED"
+
+    if [ "$ALLOW_BOOTSTRAP_DESTROY" != "true" ]; then
+      echo "ERROR: ALLOW_BOOTSTRAP_DESTROY must be set to true"
+      exit 1
+    fi
+
+    if [ -z "$CHANGE_TICKET_ID" ]; then
+      echo "ERROR: CHANGE_TICKET_ID is required"
+      exit 1
+    fi
+
+    echo "Change Ticket: $CHANGE_TICKET_ID"
+
+    terraform init -input=false
+    terraform destroy -input=false -auto-approve
